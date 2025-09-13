@@ -4,6 +4,21 @@
 
 > ⚠️ **Disclaimer**: This is an unofficial modification of the original [UniTok](https://github.com/FoundationVision/UniTok) repository. This version has been adapted to support Hugging Face transformers-style model loading and saving functionality.
 
+## 🤗 Pretrained Model
+
+The pretrained model is available on Hugging Face Hub:
+
+**Model Hub**: [XuejiFang/UniTok_transformers](https://huggingface.co/XuejiFang/UniTok_transformers)
+
+You can directly load the model from Hugging Face Hub without downloading files manually:
+
+```python
+from UniTok import UniTok
+
+# Load directly from Hugging Face Hub
+model = UniTok.from_pretrained("XuejiFang/UniTok_transformers")
+```
+
 ## Overview
 
 UniTok is a unified tokenizer for images with vector quantization, enabling both image reconstruction and generation tasks. This repository modifies the original UniTok implementation to integrate seamlessly with the Hugging Face transformers ecosystem.
@@ -19,8 +34,10 @@ UniTok is a unified tokenizer for images with vector quantization, enabling both
 ```bash
 git clone https://github.com/XuejiFang/UniTok_transformers.git
 cd UniTok_transformers
-pip install torch torchvision transformers timm pillow
+pip install torch torchvision transformers timm pillow open_clip_torch
 ```
+
+**Note**: No manual model download required! The model will be automatically downloaded from Hugging Face Hub on first use.
 
 ## Quick Start
 
@@ -29,7 +46,10 @@ pip install torch torchvision transformers timm pillow
 ```python
 from UniTok import UniTok, UniTokConfig
 
-# Load pretrained model (transformers-style)
+# Load pretrained model from Hugging Face Hub
+model = UniTok.from_pretrained("XuejiFang/UniTok_transformers")
+
+# Or load from local directory
 model = UniTok.from_pretrained('./ckpt/unitok')
 
 # Create custom configuration
@@ -51,8 +71,8 @@ import torch
 from PIL import Image
 from UniTok import UniTok
 
-# Load model
-model = UniTok.from_pretrained('./ckpt/unitok')
+# Load model from Hugging Face Hub
+model = UniTok.from_pretrained("XuejiFang/UniTok_transformers")
 model.eval()
 
 # Process image
@@ -68,11 +88,14 @@ with torch.no_grad():
 ### Command Line Inference
 
 ```bash
-# Quick inference
+# Quick inference (automatically downloads model from Hugging Face Hub)
 ./launch.sh
 
-# Custom inference
+# Use local model
 python inference.py --model_path ./ckpt/unitok --src_img path/to/image.jpg --rec_img output.png
+
+# Use Hugging Face Hub model
+python inference.py --model_path XuejiFang/UniTok_transformers --src_img path/to/image.jpg --rec_img output.png
 ```
 
 ## Model Configuration
@@ -101,11 +124,13 @@ UniTok_transformers/
 │   └── vqvae.py              # VQVAE components
 ├── inference.py              # Inference script
 ├── launch.sh                 # Quick start script
-├── ckpt/unitok/              # Pretrained model
+├── ckpt/unitok/              # Local pretrained model (optional)
 │   ├── config.json           # Model configuration
 │   └── model.safetensors     # Model weights
 └── assets/                   # Sample images
 ```
+
+**Note**: The `ckpt/unitok/` directory is optional. Models can be loaded directly from Hugging Face Hub.
 
 ## Key Differences from Original
 
@@ -145,19 +170,19 @@ If you use this code, please cite both this repository and the original work:
 
 ```bibtex
 # Original UniTok paper
-@article{unitok2024,
-  title={An Image is Worth 32 Tokens for Reconstruction and Generation},
-  author={...},
-  journal={...},
-  year={2024}
+@article{unitok,
+  title={UniTok: A Unified Tokenizer for Visual Generation and Understanding},
+  author={Ma, Chuofan and Jiang, Yi and Wu, Junfeng and Yang, Jihan and Yu, Xin and Yuan, Zehuan and Peng, Bingyue and Qi, Xiaojuan},
+  journal={arXiv preprint arXiv:2502.20321},
+  year={2025}
 }
 
 # This repository
-@misc{unitok_transformers2024,
+@misc{unitok_transformers2025,
   title={UniTok Transformers: Unofficial Hugging Face Integration},
   author={Xueji Fang},
   url={https://github.com/XuejiFang/UniTok_transformers},
-  year={2024}
+  year={2025}
 }
 ```
 
@@ -169,6 +194,7 @@ This project follows the same license as the original UniTok repository. Please 
 
 - Original UniTok implementation: [FoundationVision/UniTok](https://github.com/FoundationVision/UniTok)
 - Hugging Face transformers library for the excellent framework
+- Hugging Face Hub for hosting the pretrained model: [XuejiFang/UniTok_transformers](https://huggingface.co/XuejiFang/UniTok_transformers)
 - Claude Code for assistance in the adaptation process
 
 ## Contributing

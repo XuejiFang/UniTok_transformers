@@ -5,8 +5,8 @@
 # transformers-style model loading with assistance from Claude Code.
 
 python inference.py \
-    --model_path ./ckpt/unitok \
+    --model_path XuejiFang/UniTok_transformers \
     --src_img assets/vis_imgs/v0.jpg \
-    --rec_img ./assets/rec_imgs/v0.png
+    --rec_img ./rec_img.png
 
 echo "Inference completed! View result image: ./rec_img.png"

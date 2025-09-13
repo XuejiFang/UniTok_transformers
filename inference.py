@@ -69,9 +69,12 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', type=str, default='')
-    parser.add_argument('--src_img', type=str, default='')
-    parser.add_argument('--rec_img', type=str, default='')
+    parser.add_argument('--model_path', type=str, default='XuejiFang/UniTok_transformers', 
+                       help='Path to model directory or Hugging Face model ID')
+    parser.add_argument('--src_img', type=str, default='assets/vis_imgs/v0.jpg',
+                       help='Path to source image')
+    parser.add_argument('--rec_img', type=str, default='./rec_img.png',
+                       help='Path to save reconstructed image')
     args = parser.parse_args()
     main(args)
 
