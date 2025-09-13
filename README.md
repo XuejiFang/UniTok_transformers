@@ -4,21 +4,6 @@
 
 > ⚠️ **Disclaimer**: This is an unofficial modification of the original [UniTok](https://github.com/FoundationVision/UniTok) repository. This version has been adapted to support Hugging Face transformers-style model loading and saving functionality.
 
-## 🤗 Pretrained Model
-
-The pretrained model is available on Hugging Face Hub:
-
-**Model Hub**: [XuejiFang/UniTok_transformers](https://huggingface.co/XuejiFang/UniTok_transformers)
-
-You can directly load the model from Hugging Face Hub without downloading files manually:
-
-```python
-from UniTok import UniTok
-
-# Load directly from Hugging Face Hub
-model = UniTok.from_pretrained("XuejiFang/UniTok_transformers")
-```
-
 ## Overview
 
 UniTok is a unified tokenizer for images with vector quantization, enabling both image reconstruction and generation tasks. This repository modifies the original UniTok implementation to integrate seamlessly with the Hugging Face transformers ecosystem.
@@ -49,10 +34,7 @@ from UniTok import UniTok, UniTokConfig
 # Load pretrained model from Hugging Face Hub
 model = UniTok.from_pretrained("XuejiFang/UniTok_transformers")
 
-# Or load from local directory
-model = UniTok.from_pretrained('./ckpt/unitok')
-
-# Create custom configuration
+# Or Create custom configuration
 config = UniTokConfig(
     img_size=224,
     vocab_size=8192,
@@ -65,27 +47,6 @@ model.save_pretrained('./my_unitok_model')
 ```
 
 ### Image Reconstruction
-
-```python
-import torch
-from PIL import Image
-from UniTok import UniTok
-
-# Load model from Hugging Face Hub
-model = UniTok.from_pretrained("XuejiFang/UniTok_transformers")
-model.eval()
-
-# Process image
-img = Image.open('your_image.jpg')
-# ... (preprocessing code)
-
-# Encode and reconstruct
-with torch.no_grad():
-    indices = model.img_to_idx(img_tensor)
-    reconstructed = model.idx_to_img(indices)
-```
-
-### Command Line Inference
 
 ```bash
 # Quick inference (automatically downloads model from Hugging Face Hub)
