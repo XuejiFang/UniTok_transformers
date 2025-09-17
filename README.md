@@ -13,6 +13,8 @@ UniTok is a unified tokenizer for images with vector quantization, enabling both
 - 🎯 **Simplified API**: Easy-to-use interface following transformers conventions  
 - 🚀 **Ready-to-use**: Pre-configured inference pipeline with minimal setup
 - 📦 **Standardized Format**: Uses standard `config.json` and `model.safetensors` files
+- 🔥 **Multi-Resolution**: Support for Multi-Resolution Images Reconstruction while keep height-width ratio.
+  > More post-training details on UniTok will be released at a later date.
 
 ## Installation
 

@@ -9,31 +9,8 @@ import os
 import torch
 import argparse
 from PIL import Image
-from UniTok import UniTok
-from torchvision.transforms import transforms
-
-
-def normalize_01_into_pm1(tensor):
-    """Normalize tensor from [0,1] range to [-1,1] range"""
-    return tensor * 2.0 - 1.0
-
-
-def save_img(img: torch.Tensor, path):
-    img = img.add(1).mul_(0.5 * 255).round().nan_to_num_(128, 0, 255).clamp_(0, 255)
-    img = img.to(dtype=torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
-    img = Image.fromarray(img[0])
-    img.save(path)
-
-
-def get_transform(img_size=256, resize_ratio=1.125):
-    """Get image preprocessing transform"""
-    return transforms.Compose([
-        transforms.Resize(int(img_size * resize_ratio)),
-        transforms.CenterCrop(img_size),
-        transforms.ToTensor(), 
-        normalize_01_into_pm1,
-    ])
-
+from UniTok import UniTok, MultiResolutionProcessor, normalize_01_into_pm1, save_img
+from torchvision import transforms
 
 def main(args):
     # Load model using transformers-style loading
@@ -45,26 +22,34 @@ def main(args):
     
     print(f"Loading model from: {model_path}")
     unitok = UniTok.from_pretrained(model_path)
-    img_size = unitok.config.img_size
-    resize_ratio = unitok.config.resize_ratio
     
     unitok.to(device)
     unitok.eval()
 
-    # Prepare image preprocessing
-    preprocess = get_transform(img_size, resize_ratio)
-    img = Image.open(args.src_img).convert("RGB")
-    img = preprocess(img).unsqueeze(0).to(device)
+    for i  in range(8):
+        args.src_img = f'assets/vis_imgs/v{i}.jpg'
+        args.rec_img = f'./assets/rec_imgs/384-4/rec_v{i}.png'
 
-    # Inference
-    with torch.no_grad():
-        code_idx = unitok.img_to_idx(img)
-        rec_img = unitok.idx_to_img(code_idx)
+        img = Image.open(args.src_img).convert("RGB")
+        original_size = img.size
+        processor = MultiResolutionProcessor(max_size=getattr(args, 'max_resolution', 256), patch_size=16)
+        result = processor.process_image(img, training=False)
+        img_tensor = transforms.ToTensor()(result['image'])
+        img_tensor = normalize_01_into_pm1(img_tensor).unsqueeze(0).to('cuda')
 
-    final_img = torch.cat((img, rec_img), dim=3)
-    save_img(final_img, args.rec_img)
-
-    print('The image is saved to {}. The left one is the original image after resizing and cropping. The right one is the reconstructed image.'.format(args.rec_img))
+        with torch.no_grad():
+            rec_img = unitok.img_to_reconstructed_img(
+                img_tensor,
+                shape_info=result['shape_info'],
+                attention_mask=None  # set none for inference
+            )
+        
+        print(f'Original Image Size: {original_size} -> Resized To: {result["shape_info"]["processed_size"]}')
+        
+        if args.rec_img:
+            final_path = args.rec_img
+            save_img(rec_img, final_path)
+            print(f'Saved Reconstructed Image To: {final_path}')
 
 
 if __name__ == '__main__':
@@ -75,6 +60,8 @@ if __name__ == '__main__':
                        help='Path to source image')
     parser.add_argument('--rec_img', type=str, default='./rec_img.png',
                        help='Path to save reconstructed image')
+    parser.add_argument('--max_resolution', type=int, default=256,
+                       help='Maximum resolution for multi-resolution processing')
     args = parser.parse_args()
     main(args)
 

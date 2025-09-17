@@ -116,19 +116,92 @@ class UniTok(PreTrainedModel):
         self.encoder.set_grad_checkpointing(config.grad_ckpt)
         self.text_encoder.set_grad_checkpointing(config.grad_ckpt)
 
-    def forward(self, img, vae_bs, text=None, ret_usages=False):
+    def lock_text_tower(self, unlocked_layers: int = 0, freeze_layer_norm: bool = True):
+        """
+        冻结Text Encoder的参数
+        Args:
+            unlocked_layers: 从顶层开始保持可训练的层数 (0表示完全冻结)
+            freeze_layer_norm: 是否同时冻结LayerNorm层
+        """
+        # 冻结所有text encoder参数
+        for param in self.text_encoder.parameters():
+            param.requires_grad = False
+        
+        # 如果unlocked_layers > 0，解冻顶层的部分layers
+        if unlocked_layers > 0:
+            total_layers = len(self.text_encoder.transformer.resblocks)
+            unlock_start = max(0, total_layers - unlocked_layers)
+            
+            for i in range(unlock_start, total_layers):
+                for param in self.text_encoder.transformer.resblocks[i].parameters():
+                    param.requires_grad = True
+                    
+                # 如果不冻结LayerNorm，则解冻对应的norm层
+                if not freeze_layer_norm:
+                    for param in self.text_encoder.transformer.resblocks[i].ln_1.parameters():
+                        param.requires_grad = True
+                    for param in self.text_encoder.transformer.resblocks[i].ln_2.parameters():
+                        param.requires_grad = True
+        
+        # 设置no_grad标志用于前向传播优化
+        self.text_no_grad = True
+        
+        print(f"[UniTok] Text Encoder locked. Unlocked layers: {unlocked_layers}")
+        
+        # 打印冻结状态统计
+        total_params = sum(p.numel() for p in self.text_encoder.parameters())
+        frozen_params = sum(p.numel() for p in self.text_encoder.parameters() if not p.requires_grad)
+        print(f"[UniTok] Text Encoder: {frozen_params}/{total_params} parameters frozen ({frozen_params/total_params*100:.1f}%)")
+
+    def forward(self, img, vae_bs, text=None, ret_usages=False, batch_metadata=None):
+        """
+        Args:
+            img: 输入图像张量
+            vae_bs: VAE batch size
+            text: 文本输入
+            ret_usages: 是否返回codebook使用统计
+            batch_metadata: 多分辨率模式下的批次元数据
+        """
+        # Encoder处理 - 统一使用相同的encoder，多分辨率逻辑在数据预处理阶段处理
         img_tokens = self.encoder(img).float()
+        
+        # 获取attention mask（如果有的话）
+        if batch_metadata is not None:
+            attention_masks = batch_metadata.get('attention_masks', None)
+            shape_infos = batch_metadata.get('shape_infos', None)
+            attention_mask_flat = attention_masks.view(attention_masks.shape[0], -1) if attention_masks is not None else None
+        else:
+            attention_mask_flat = None
+            shape_infos = None
+
+        # 量化处理
         with torch.cuda.amp.autocast(enabled=False):
             img_tokens = torch.utils.checkpoint.checkpoint(self.quant_proj, img_tokens, use_reentrant=False)
             img_tokens, vq_loss, entropy_loss, usages = self.quantizer(img_tokens)
             img_tokens = torch.utils.checkpoint.checkpoint(self.post_quant_proj, img_tokens, use_reentrant=False)
-        img_rec = self.decoder(img_tokens[:vae_bs]).float()
 
+        # Decoder处理
+        if shape_infos is not None:
+            img_rec = self.decoder(
+                img_tokens[:vae_bs], 
+                shape_info=shape_infos[:vae_bs] if isinstance(shape_infos, list) else shape_infos,
+                attention_mask=attention_mask_flat[:vae_bs] if attention_mask_flat is not None else None
+            ).float()
+        else:
+            img_rec = self.decoder(img_tokens[:vae_bs]).float()
+
+        # CLIP特征处理
         clip_visual = img_tokens.mean(dim=1)
         clip_visual = self.projection(self.fc_norm(clip_visual))
         clip_visual = F.normalize(clip_visual, dim=-1)
+        
         if text is not None:
-            clip_text = self.text_encoder(text)
+            if self.text_no_grad:
+                with torch.no_grad():
+                    clip_text = self.text_encoder(text)
+                clip_text = clip_text.detach()
+            else:
+                clip_text = self.text_encoder(text)
             clip_text = F.normalize(clip_text, dim=-1)
         else:
             clip_text = None
@@ -142,6 +215,11 @@ class UniTok(PreTrainedModel):
             "clip_text_features": clip_text,
             "logit_scale": self.logit_scale.exp()
         }
+        
+        # 添加多分辨率相关的输出
+        if batch_metadata is not None:
+            output_dict["batch_metadata"] = batch_metadata
+            
         return output_dict
 
     def encode_image(self, image, normalize: bool = False):
@@ -155,31 +233,69 @@ class UniTok(PreTrainedModel):
         return F.normalize(features, dim=-1) if normalize else features
 
     def encode_text(self, text, normalize: bool = False):
-        features = self.text_encoder(text)
+        if self.text_no_grad:
+            with torch.no_grad():
+                features = self.text_encoder(text)
+            features = features.detach()
+        else:
+            features = self.text_encoder(text)
         return F.normalize(features, dim=-1) if normalize else features
 
-    def img_to_idx(self, img):
+    def idx_to_img(self, indices, shape_info=None, attention_mask=None):
+        """
+        从索引重建图像
+        """
+        features = self.quantizer.idx_to_f(indices)
+        features = self.post_quant_proj(features)
+        
+        if shape_info is not None:
+            img = self.decoder(features, shape_info=shape_info, attention_mask=attention_mask).clamp_(-1, 1)
+        else:
+            img = self.decoder(features).clamp_(-1, 1)
+        return img
+
+    def img_to_idx(self, img, attention_mask=None):
+        """
+        图像到索引的转换
+        """
+        # 使用统一的encoder
         features = self.encoder(img).float()
         features = self.quant_proj(features)
         return self.quantizer.f_to_idx(features)
 
-    def idx_to_img(self, indices):
-        features = self.quantizer.idx_to_f(indices)
-        features = self.post_quant_proj(features)
-        img = self.decoder(features).clamp_(-1, 1)
-        return img
-
-    def img_to_reconstructed_img(self, image) -> torch.Tensor:
+    def img_to_reconstructed_img(self, image, shape_info=None, attention_mask=None) -> torch.Tensor:
+        """
+        重建图像
+        
+        Args:
+            image: 输入图像
+            shape_info: 多分辨率模式下的形状信息
+            attention_mask: attention mask
+        """
+        # 使用统一的encoder处理
         img_tokens = self.encoder(image)
+        
+        # 获取flattened attention mask
+        if attention_mask is not None:
+            attention_mask_flat = attention_mask.view(attention_mask.shape[0], -1)
+        else:
+            attention_mask_flat = None
+        
         img_tokens = self.quant_proj(img_tokens)
         img_tokens, _, _, _ = self.quantizer(img_tokens)
         img_tokens = self.post_quant_proj(img_tokens)
-        img_rec = self.decoder(img_tokens).clamp_(-1, 1)
+        
+        # Decoder处理
+        if shape_info is not None:
+            img_rec = self.decoder(
+                img_tokens, 
+                shape_info=shape_info,
+                attention_mask=attention_mask_flat
+            ).clamp_(-1, 1)
+        else:
+            img_rec = self.decoder(img_tokens).clamp_(-1, 1)
+            
         return img_rec
-
-    def lock_text_tower(self, unlocked_layers: int = 0, freeze_layer_norm: bool = True, unlock_text_proj=False):
-        self.text.lock(unlocked_layers, freeze_layer_norm, unlock_text_proj)
-        self.text_no_grad = True
 
 
 if __name__ == '__main__':

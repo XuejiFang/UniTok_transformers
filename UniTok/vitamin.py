@@ -322,6 +322,7 @@ class GeGluMlp(nn.Module):
 class HybridEmbed(nn.Module):
     """ CNN Feature Map Embedding
     Extract feature map from CNN, flatten, project to embedding dim.
+    支持动态输入尺寸
     """
     def __init__(
         self,
@@ -333,6 +334,7 @@ class HybridEmbed(nn.Module):
         embed_dim=1024,
         bias=True,
         dynamic_img_pad=False,
+        multi_resolution=False,  # 新增：支持多分辨率
     ):
         super().__init__()
         assert isinstance(backbone, nn.Module)
@@ -341,42 +343,69 @@ class HybridEmbed(nn.Module):
         self.img_size = img_size
         self.patch_size = patch_size
         self.backbone = backbone
+        self.multi_resolution = multi_resolution
         
-        # Try to infer feature dimensions, use default values if it fails
-        try:
+        if not multi_resolution:
+            # 原有的固定尺寸模式
             with torch.no_grad():
                 training = backbone.training
                 if training:
                     backbone.eval()
-                # Create test tensor on the correct device
-                test_input = torch.zeros(1, in_chans, img_size[0], img_size[1])
-                # Move test input to the same device as the first parameter if available
-                first_param = next(backbone.parameters(), None)
-                if first_param is not None and not first_param.is_meta:
-                    test_input = test_input.to(first_param.device)
-                o = self.backbone(test_input)
+                o = self.backbone(torch.zeros(1, in_chans, img_size[0], img_size[1]))
                 if isinstance(o, (list, tuple)):
                     o = o[-1]  # last feature if backbone outputs list/tuple of features
                 feature_size = o.shape[-2:]
                 feature_dim = o.shape[1]
                 backbone.train(training)
-        except (RuntimeError, TypeError) as e:
-            # If inference fails (e.g., on meta device), use default values
-            # These are typical values for vitamin_large model
-            feature_size = (8, 8)  # 256//32 = 8 for ViTamin-Large
-            feature_dim = 1024  # ViTamin-Large feature dimension
 
-        assert feature_size[0] % patch_size[0] == 0 and feature_size[1] % patch_size[1] == 0
-        self.grid_size = (feature_size[0] // patch_size[0], feature_size[1] // patch_size[1])
-        self.num_patches = self.grid_size[0] * self.grid_size[1]
+            assert feature_size[0] % patch_size[0] == 0 and feature_size[1] % patch_size[1] == 0
+            self.grid_size = (feature_size[0] // patch_size[0], feature_size[1] // patch_size[1])
+            self.num_patches = self.grid_size[0] * self.grid_size[1]
+        else:
+            # 多分辨率模式：grid_size和num_patches将动态计算
+            self.grid_size = None
+            self.num_patches = None
+        
         self.proj = nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, attention_mask=None):
+        """
+        Args:
+            x: 输入图像 tensor [B, C, H, W]
+            attention_mask: attention mask [B, patch_H, patch_W]，用于多分辨率模式
+        """
         x = self.backbone(x)
         if isinstance(x, (list, tuple)):
             x = x[-1]  # last feature if backbone outputs list/tuple of features
         x = self.proj(x)
+        
+        # 从2D特征图转换为1D序列: [B, C, H, W] -> [B, H*W, C]
         x = x.flatten(2).transpose(1, 2)
+        
+        if self.multi_resolution and attention_mask is not None:
+            # 应用attention mask（如果提供）
+            # attention_mask: [B, patch_H, patch_W] -> [B, patch_H*patch_W]
+            B, L, C = x.shape
+            mask_flat = attention_mask.view(B, -1)  # [B, patch_H*patch_W]
+            
+            # 确保mask和特征长度匹配
+            if mask_flat.shape[1] != L:
+                # 如果不匹配，可能是由于不同的downsampling ratio
+                # 需要根据实际情况调整mask
+                patch_H = int(np.sqrt(L))
+                patch_W = L // patch_H
+                if patch_H * patch_W == L:
+                    # 重新调整mask尺寸
+                    mask_flat = F.interpolate(
+                        attention_mask.unsqueeze(1).float(),  # [B, 1, H, W]
+                        size=(patch_H, patch_W),
+                        mode='nearest'
+                    ).squeeze(1).view(B, -1)  # [B, patch_H*patch_W]
+            
+            # 将mask信息附加到特征中（可以在模型中使用）
+            # 这里我们暂时不直接应用mask，而是返回mask供后续使用
+            return x, mask_flat
+        
         return x
 
 
@@ -493,10 +522,12 @@ class ViTaminDecoder(nn.Module):
         drop_path=0.,
         depths=(4, 2),
         grad_ckpt=False,
+        multi_resolution=False,  # 新增：支持多分辨率
     ):
         super().__init__()
 
         self.num_query = num_query
+        self.multi_resolution = multi_resolution
         vit = timm.create_model(
             model,
             fc_norm=False,
@@ -541,26 +572,92 @@ class ViTaminDecoder(nn.Module):
     def get_last_param(self):
         return self.up_conv4.conv2.weight
 
-    def forward(self, x):
+    def forward(self, x, shape_info=None, attention_mask=None):
+        """
+        Args:
+            x: tokens [B, L, C]
+            shape_info: 多分辨率模式下的形状信息，包含patch_h和patch_w
+            attention_mask: attention mask [B, L]，用于masking padding区域
+        """
         B, L, C = x.shape
-        H = W = int((L-self.num_query) ** 0.5)
+        
+        if shape_info is not None:
+            # 多分辨率模式：从shape_info获取尺寸信息
+            if isinstance(shape_info, (list, tuple)):
+                # 批处理情况：每个样本有自己的shape_info
+                # 这里假设batch内所有图像已经padding到相同尺寸
+                shape_info_dict = shape_info[0]  # 使用第一个样本的尺寸信息
+                H = shape_info_dict['patch_h']
+                W = shape_info_dict['patch_w']
+            else:
+                # 单个样本
+                H = shape_info['patch_h']
+                W = shape_info['patch_w']
+        else:
+            # 固定尺寸模式：使用原有逻辑
+            H = W = int((L-self.num_query) ** 0.5)
+        
+        # 处理query tokens和patch tokens
         x = self.norm_pre(x)
         if self.grad_ckpt:
             x = checkpoint_seq(self.blocks, x)
-            x = x[:, self.num_query:, :]
+            x = x[:, self.num_query:, :]  # 移除query tokens
             x = self.norm(x)
-            x = x.view(B, H, W, C).permute(0, 3, 1, 2)
+            
+            # reshape到2D特征图
+            # 确保tensor长度匹配
+            expected_len = H * W
+            if x.shape[1] != expected_len:
+                # 如果长度不匹配，进行截断或padding
+                if x.shape[1] > expected_len:
+                    x = x[:, :expected_len, :]
+                else:
+                    # padding with zeros
+                    padding = torch.zeros(B, expected_len - x.shape[1], C, 
+                                        device=x.device, dtype=x.dtype)
+                    x = torch.cat([x, padding], dim=1)
+            
+            x = x.view(B, H, W, C).permute(0, 3, 1, 2)  # [B, C, H, W]
+            
+            # 应用attention mask（如果提供）
+            if attention_mask is not None:
+                # attention_mask: [B, L] -> [B, H, W]
+                mask_2d = attention_mask.view(B, H, W).unsqueeze(1)  # [B, 1, H, W]
+                x = x * mask_2d.float()  # 将padding区域置零
+            
             x = checkpoint(self.up_conv1, x)
             x = checkpoint_seq(self.up_conv2, x)
             x = checkpoint_seq(self.up_conv3, x)
         else:
             x = self.blocks(x)
-            x = x[:, self.num_query:, :]
+            x = x[:, self.num_query:, :]  # 移除query tokens
             x = self.norm(x)
-            x = x.view(B, H, W, C).permute(0, 3, 1, 2)
+            
+            # reshape到2D特征图
+            # 确保tensor长度匹配
+            expected_len = H * W
+            if x.shape[1] != expected_len:
+                # 如果长度不匹配，进行截断或padding
+                if x.shape[1] > expected_len:
+                    x = x[:, :expected_len, :]
+                else:
+                    # padding with zeros
+                    padding = torch.zeros(B, expected_len - x.shape[1], C, 
+                                        device=x.device, dtype=x.dtype)
+                    x = torch.cat([x, padding], dim=1)
+            
+            x = x.view(B, H, W, C).permute(0, 3, 1, 2)  # [B, C, H, W]
+            
+            # 应用attention mask（如果提供）
+            if attention_mask is not None:
+                # attention_mask: [B, L] -> [B, H, W]
+                mask_2d = attention_mask.view(B, H, W).unsqueeze(1)  # [B, 1, H, W]
+                x = x * mask_2d.float()  # 将padding区域置零
+            
             x = self.up_conv1(x)
             x = self.up_conv2(x)
             x = self.up_conv3(x)
+        
         x = self.up_conv4(x)
         return x
 
