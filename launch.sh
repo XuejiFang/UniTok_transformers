@@ -7,5 +7,5 @@
 python inference.py \
     --model_path ckpt/384-4 \
     --src_img assets/vis_imgs/v7.jpg \
-    --rec_img ./assets/rec_imgs/ori/rec_v7.png \
+    --rec_img ./rec_image.png \
     --max_resolution 1024

@@ -240,62 +240,31 @@ class UniTok(PreTrainedModel):
         else:
             features = self.text_encoder(text)
         return F.normalize(features, dim=-1) if normalize else features
-
-    def idx_to_img(self, indices, shape_info=None, attention_mask=None):
-        """
-        从索引重建图像
-        """
-        features = self.quantizer.idx_to_f(indices)
+    
+    def idx_to_img(self, img_tokens, shape_info=None, attention_mask_flat=None):
+        features = self.quantizer.idx_to_f(img_tokens)
         features = self.post_quant_proj(features)
-        
-        if shape_info is not None:
-            img = self.decoder(features, shape_info=shape_info, attention_mask=attention_mask).clamp_(-1, 1)
-        else:
-            img = self.decoder(features).clamp_(-1, 1)
-        return img
-
-    def img_to_idx(self, img, attention_mask=None):
-        """
-        图像到索引的转换
-        """
-        # 使用统一的encoder
-        features = self.encoder(img).float()
-        features = self.quant_proj(features)
-        return self.quantizer.f_to_idx(features)
-
-    def img_to_reconstructed_img(self, image, shape_info=None, attention_mask=None) -> torch.Tensor:
-        """
-        重建图像
-        
-        Args:
-            image: 输入图像
-            shape_info: 多分辨率模式下的形状信息
-            attention_mask: attention mask
-        """
-        # 使用统一的encoder处理
-        img_tokens = self.encoder(image)
-        
-        # 获取flattened attention mask
-        if attention_mask is not None:
-            attention_mask_flat = attention_mask.view(attention_mask.shape[0], -1)
-        else:
-            attention_mask_flat = None
-        
-        img_tokens = self.quant_proj(img_tokens)
-        img_tokens, _, _, _ = self.quantizer(img_tokens)
-        img_tokens = self.post_quant_proj(img_tokens)
-        
-        # Decoder处理
         if shape_info is not None:
             img_rec = self.decoder(
-                img_tokens, 
+                features, 
                 shape_info=shape_info,
                 attention_mask=attention_mask_flat
             ).clamp_(-1, 1)
         else:
             img_rec = self.decoder(img_tokens).clamp_(-1, 1)
-            
         return img_rec
+
+    def img_to_idx(self, img, attention_mask=None):
+        features = self.encoder(img).float()
+        
+        if attention_mask is not None:
+            attention_mask_flat = attention_mask.view(attention_mask.shape[0], -1)
+        else:
+            attention_mask_flat = None
+        
+        features = self.quant_proj(features)
+        img_tokens = self.quantizer.f_to_idx(features)
+        return img_tokens, attention_mask_flat
 
 
 if __name__ == '__main__':

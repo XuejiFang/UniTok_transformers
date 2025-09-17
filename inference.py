@@ -34,11 +34,8 @@ def main(args):
     img_tensor = normalize_01_into_pm1(img_tensor).unsqueeze(0).to('cuda')
 
     with torch.no_grad():
-        rec_img = unitok.img_to_reconstructed_img(
-            img_tensor,
-            shape_info=result['shape_info'],
-            attention_mask=None  # set none for inference
-        )
+        img_tokens, attention_mask_flat = unitok.img_to_idx(img_tensor, None)
+        rec_img = unitok.idx_to_img(img_tokens, result['shape_info'], attention_mask_flat)
     
     print(f'Original Image Size: {original_size} -> Resized To: {result["shape_info"]["processed_size"]}')
     
